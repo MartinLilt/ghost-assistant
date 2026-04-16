@@ -14,6 +14,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import hashlib
+import subprocess
 import sys
 import time
 import threading
@@ -49,6 +51,7 @@ class AutonomousPipeline:
         tab_poll_interval: float = 1.0,
         use_overlay: bool = True,
         output: MultiOutput | None = None,
+        use_tts: bool = True,
     ) -> None:
         self._pid = pid
         self._app_name = app_name
@@ -56,13 +59,16 @@ class AutonomousPipeline:
         self._question = question
         self._debounce = debounce
         self._tab_poll_interval = tab_poll_interval
-        self._output = output  # MultiOutput for TCP/BT
+        self._output = output
+        self._tts = use_tts
 
         self._pending_timer: threading.Timer | None = None
         self._lock = threading.Lock()
         self._busy = False
+        self._queued_reason: str | None = None
         self._last_url = ""
         self._last_title = ""
+        self._last_content_hash = ""  # #2: skip AI if content unchanged
 
         self._overlay = OverlayWindow() if use_overlay else None
 
@@ -96,14 +102,24 @@ class AutonomousPipeline:
     def _run_analysis(self, reason: str) -> None:
         with self._lock:
             if self._busy:
+                self._queued_reason = reason
                 return
             self._busy = True
+            self._queued_reason = None
         try:
             data = hybrid_snapshot(self._pid)
             url = data.get("url", "")
             screen = data["full_text"]
+            source = data.get("source", "?")
 
-            header = f"[{_now()}] {reason}" + (f" · {url}" if url else "")
+            # ── #2: skip if content unchanged ──────────────────────────────
+            content_hash = hashlib.md5(screen.encode()).hexdigest()
+            if content_hash == self._last_content_hash:
+                print(f"[pipeline] skip — content unchanged ({reason})", file=sys.stderr)
+                return
+            self._last_content_hash = content_hash
+
+            header = f"[{_now()}] {reason} [{source}]" + (f" · {url}" if url else "")
             print(f"\n{'─'*60}")
             print(header)
             print("🤖 ", end="", flush=True)
@@ -111,14 +127,34 @@ class AutonomousPipeline:
             if self._overlay:
                 self._overlay.set_header(header)
 
-            ask(screen, question=self._question, model=self._model,
-                stream=True, overlay=self._overlay, output=self._output)
+            response = ask(screen, question=self._question, model=self._model,
+                           stream=True, overlay=self._overlay, output=self._output)
+
+            # ── #7: TTS — speak response after generation ──────────────────
+            if self._tts and response:
+                # Strip markdown/code blocks for cleaner speech
+                spoken = response
+                for marker in ["```", "TYPE:", "APPROACH:", "CODE:", "COMPLEXITY:"]:
+                    spoken = spoken.replace(marker, "")
+                spoken = " ".join(spoken.split())[:300]  # max 300 chars
+                subprocess.Popen(
+                    ["say", "-v", "Samantha", "-r", "210", spoken],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
         except Exception as exc:
             print(f"\n[pipeline] error: {exc}", file=sys.stderr)
         finally:
             with self._lock:
                 self._busy = False
+                queued = self._queued_reason
+                self._queued_reason = None
+
+            if queued:
+                threading.Thread(
+                    target=self._run_analysis, args=(f"{queued}+queued",), daemon=True
+                ).start()
 
     # ── tab watcher ────────────────────────────────────────────────────────
 
@@ -182,10 +218,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Autonomous screen watcher + Ollama AI")
     parser.add_argument("--browser", default="Google Chrome")
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--question", default="What is shown on screen? If it is a task or question, explain and suggest an answer.")
+    parser.add_argument("--question", default="Detect what's on screen and respond in the matching format.")
     parser.add_argument("--debounce", type=float, default=1.5)
     parser.add_argument("--tab-poll", type=float, default=1.0)
     parser.add_argument("--no-overlay", action="store_true", help="Disable floating window")
+    parser.add_argument("--no-tts", action="store_true", help="Disable macOS text-to-speech")
     parser.add_argument("--tcp", type=int, metavar="PORT", help="Broadcast AI output via TCP (e.g. --tcp 9999)")
     parser.add_argument("--bt", metavar="DEVICE", help="Send AI output via Bluetooth Serial (e.g. --bt HC-05)")
     parser.add_argument("--baud", type=int, default=9600, help="Bluetooth baud rate (default: 9600)")
@@ -240,6 +277,7 @@ def main() -> None:
         tab_poll_interval=args.tab_poll,
         use_overlay=not args.no_overlay,
         output=output if (args.tcp or args.bt) else None,
+        use_tts=not args.no_tts,
     ).run()
 
 

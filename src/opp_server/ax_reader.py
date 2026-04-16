@@ -148,32 +148,50 @@ def snapshot_text(pid: int) -> str:
     return "\n".join(snapshot(pid))
 
 
-def hybrid_snapshot(pid: int) -> dict:
+def hybrid_snapshot(pid: int, ax_min_words: int = 80) -> dict:
     """
-    Combines AX metadata (URL, tab title) with OCR page content.
-    Returns dict with keys: 'url', 'title', 'ax_text', 'ocr_text', 'full_text'.
+    Combines AX metadata (URL, title) with page content.
+
+    Strategy:
+      - AX API always runs (fast, ~5ms) — gives URL, title, structured text
+      - OCR runs ONLY if AX text is sparse (< ax_min_words words)
+        This avoids slow screenshot+Vision when AX already has the content.
+
+    Returns dict: 'url', 'title', 'ax_text', 'ocr_text', 'full_text', 'source'.
     """
     from opp_server.ocr_reader import ocr_snapshot
 
     ax_texts = snapshot(pid)
-    ocr_texts = ocr_snapshot(pid)
 
-    # Extract URL and title from AX texts (URL-like strings)
+    # Extract URL and title
     url = next((t for t in ax_texts if t.startswith(("http", "localhost", "file://"))), "")
     title = ax_texts[0] if ax_texts else ""
-
     ax_content = "\n".join(ax_texts)
-    ocr_content = "\n".join(ocr_texts)
 
-    # Merge: prefer OCR for page content, AX for metadata
-    full = f"[URL] {url}\n[TITLE] {title}\n\n[PAGE CONTENT]\n{ocr_content}"
+    ax_word_count = len(ax_content.split())
+
+    if ax_word_count >= ax_min_words:
+        # AX has enough — skip OCR entirely
+        source = "ax"
+        ocr_content = ""
+        page_content = ax_content
+    else:
+        # AX sparse — run OCR for full page text
+        source = "ocr"
+        ocr_texts = ocr_snapshot(pid)
+        ocr_content = "\n".join(ocr_texts)
+        # Merge: OCR for body, AX metadata on top
+        page_content = ocr_content if ocr_content else ax_content
+
+    full = f"[URL] {url}\n[TITLE] {title}\n\n[PAGE CONTENT]\n{page_content}"
 
     return {
         "url": url,
         "title": title,
         "ax_text": ax_content,
-        "ocr_text": ocr_content,
+        "ocr_text": ocr_content if source == "ocr" else "",
         "full_text": full,
+        "source": source,          # "ax" or "ocr" — useful for debugging
     }
 
 
