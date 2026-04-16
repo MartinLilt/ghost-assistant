@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "opp-server"
+version = "0.1.0"
+description = "Base Python environment for opp-server"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "opp-server contributors" }]
+dependencies = [
+    "mss>=9.0",
+    "Pillow>=10.0",
+    "ollama>=0.3",
+    "pyserial>=3.5",
+    "pyobjc-framework-ApplicationServices>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Vision>=10.0; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10.0; sys_platform == 'darwin'",  # includes AppKit, Foundation
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
